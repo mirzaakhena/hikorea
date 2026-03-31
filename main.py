@@ -4,12 +4,12 @@ from datetime import datetime, date
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 from browser import launch_browser, create_context, login, save_session, is_logged_in
-from monitor import complete_identity_verification, fill_reservation_form, get_available_dates
+from monitor import fill_reservation_form, get_available_dates_for_month
 
 
 def log(msg: str):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {msg}")
+    print(f"[{timestamp}] {msg}", flush=True)
 
 
 def load_config() -> dict:
@@ -17,8 +17,9 @@ def load_config() -> dict:
     return {
         "user_id": os.environ["HIKOREA_ID"],
         "password": os.environ["HIKOREA_PW"],
-        "reg_number": os.environ["FOREIGN_REG_NUMBER"],
-        "issue_date": os.environ["REG_ISSUE_DATE"],
+        "orgn_cd": os.environ.get("ORGN_CD", "1270686"),
+        "desk_seq": os.environ.get("DESK_SEQ", "810"),
+        "task_code": os.environ.get("TASK_CODE", "F03"),
         "visitor_name": os.environ["VISITOR_NAME"],
         "phone_number": os.environ["PHONE_NUMBER"],
         "interval_minutes": int(os.environ.get("CHECK_INTERVAL_MINUTES", "5")),
@@ -27,29 +28,53 @@ def load_config() -> dict:
     }
 
 
+def setup_form(page, config: dict):
+    """Navigate to reservation page and fill the form."""
+    fill_reservation_form(
+        page,
+        orgn_cd=config["orgn_cd"],
+        desk_seq=config["desk_seq"],
+        task_code=config["task_code"],
+        visitor_name=config["visitor_name"],
+        phone_number=config["phone_number"],
+    )
+
+
 def check_slots(page, config: dict) -> list[date]:
     """Run a single slot check. Returns list of available dates."""
     log("Starting slot check...")
 
-    try:
-        dates = get_available_dates(page)
-    except Exception as e:
-        log(f"Error reading dates: {e}")
-        return []
+    target = date.fromisoformat(config["target_before"])
 
-    if not dates:
+    # Check the target month and the month before it
+    months_to_check = set()
+    months_to_check.add((target.year, target.month))
+    # Also check previous month if target is early in the month
+    if target.month == 1:
+        months_to_check.add((target.year - 1, 12))
+    else:
+        months_to_check.add((target.year, target.month - 1))
+
+    all_dates = []
+    for year, month in sorted(months_to_check):
+        log(f"Checking {year}-{month:02d}...")
+        try:
+            dates = get_available_dates_for_month(page, year, month)
+            all_dates.extend(dates)
+        except Exception as e:
+            log(f"Error reading dates for {year}-{month:02d}: {e}")
+
+    if not all_dates:
         log("No slots available.")
         return []
 
-    log(f"Available dates: {', '.join(d.isoformat() for d in dates)}")
+    log(f"Available dates: {', '.join(d.isoformat() for d in all_dates)}")
 
-    # Check against target
-    target = date.fromisoformat(config["target_before"])
-    matches = [d for d in dates if d < target]
+    matches = [d for d in all_dates if d < target]
     if matches:
         log(f">>> MATCH FOUND: {', '.join(d.isoformat() for d in matches)} before target {config['target_before']}")
 
-    return dates
+    return all_dates
 
 
 def ensure_logged_in(page, config: dict, context) -> bool:
@@ -62,10 +87,7 @@ def ensure_logged_in(page, config: dict, context) -> bool:
     if success:
         save_session(context)
         log("Re-login successful.")
-
-        # Need to redo identity verification and form fill
-        complete_identity_verification(page, config["reg_number"], config["issue_date"])
-        fill_reservation_form(page, config["visitor_name"], config["phone_number"])
+        setup_form(page, config)
     else:
         log("Re-login FAILED. Will retry next cycle.")
 
@@ -85,6 +107,9 @@ def main():
         context = create_context(browser)
         page = context.new_page()
 
+        # Auto-accept any JavaScript alert/confirm dialogs
+        page.on("dialog", lambda dialog: dialog.accept())
+
         # Initial login
         log("Logging in...")
         success = login(page, config["user_id"], config["password"])
@@ -96,15 +121,10 @@ def main():
         save_session(context)
         log("Login successful.")
 
-        # Identity verification (requires manual CAPTCHA first time)
-        log("Starting identity verification...")
-        complete_identity_verification(page, config["reg_number"], config["issue_date"])
-
-        # Fill reservation form
+        # Fill reservation form (no identity verification needed when logged in)
         log("Filling reservation form...")
-        fill_reservation_form(page, config["visitor_name"], config["phone_number"])
-
-        log("Setup complete. Starting monitoring loop...")
+        setup_form(page, config)
+        log("Form filled. Starting monitoring loop...")
 
         # Monitoring loop
         while True:

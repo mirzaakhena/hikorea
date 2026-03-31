@@ -1,175 +1,164 @@
 import re
-from datetime import datetime, date
+from datetime import date
 from playwright.sync_api import Page
 
 
 RESERVATION_URL = "https://www.hikorea.go.kr/resv/ResvIdntR.pt"
 
 
-def complete_identity_verification(page: Page, reg_number: str, issue_date: str):
-    """Navigate to reservation page and complete foreign registration identity verification.
+def fill_reservation_form(page: Page, orgn_cd: str, desk_seq: str, task_code: str,
+                          visitor_name: str, phone_number: str):
+    """Navigate to reservation page and fill the form.
 
     Args:
-        page: Playwright page
-        reg_number: 13-digit foreign registration number (no dash)
-        issue_date: Issue date in YYYYMMDD format
-    """
-    page.goto(RESERVATION_URL, wait_until="networkidle")
-
-    # Click on ID card authentication tab (신분증 신원인증)
-    # and select Foreign resident tab
-    page.click('text=신분증 신원인증')
-    page.wait_for_timeout(500)
-
-    # Click Foreign tab if available
-    foreign_tab = page.query_selector('text=외국인')
-    if foreign_tab:
-        foreign_tab.click()
-        page.wait_for_timeout(500)
-
-    # Fill registration number (split into two fields: first 6 + last 7)
-    reg_first = reg_number[:6]
-    reg_last = reg_number[6:]
-
-    # These selectors will need verification against the actual DOM
-    reg_inputs = page.query_selector_all('input[type="text"][maxlength="6"], input[type="text"][maxlength="7"]')
-    if len(reg_inputs) >= 2:
-        reg_inputs[0].fill(reg_first)
-        reg_inputs[1].fill(reg_last)
-
-    # Fill issue date
-    issue_input = page.query_selector('input[placeholder*="발급일자"], input[name*="issueDate"], input[maxlength="8"]')
-    if issue_input:
-        issue_input.fill(issue_date)
-
-    # CAPTCHA — pause for manual input
-    print("[CAPTCHA] Please solve the CAPTCHA in the browser, then press Enter here...")
-    input()
-
-    # Click confirm button (확인)
-    page.click('button:has-text("확인"), input[value="확인"], a:has-text("확인")')
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(2000)
-
-
-def fill_reservation_form(page: Page, visitor_name: str, phone_number: str):
-    """Fill the reservation form fields.
-
-    Args:
-        page: Playwright page (should be on reservation form after identity verification)
-        visitor_name: Full name as on registration card
+        page: Playwright page (must be logged in)
+        orgn_cd: Office code (e.g. '1270686' for Busan)
+        desk_seq: Booth radio value (e.g. '810')
+        task_code: Task checkbox value (e.g. 'F03' for visa extension)
+        visitor_name: Full name
         phone_number: Mobile number, digits only (e.g. '01064421194')
     """
-    # Select Booth Category: General Civil Service Center (Others)
-    booth_radio = page.query_selector('input[type="radio"][value*="General"], label:has-text("General Civil Service Center")')
-    if booth_radio:
-        booth_radio.click()
-    else:
-        page.click('text=General Civil Service Center')
+    page.goto(RESERVATION_URL, wait_until="networkidle")
+    page.wait_for_timeout(1000)
+
+    # Select office (담당기관)
+    page.select_option('select#orgnCd', orgn_cd)
+    page.wait_for_timeout(2000)
+
+    # Select booth category (접수창구구분)
+    page.click(f'input#deskSeq{desk_seq}')
     page.wait_for_timeout(500)
 
-    # Visitor Name — may be pre-filled, update if needed
-    name_input = page.query_selector('input[name*="visitNm"], input[name*="visitorName"]')
-    if name_input:
+    # Select task (업무선택) - e.g. F03 = 체류기간연장 (Visa Extension)
+    page.click(f'input#selBusiType1_1_{task_code}')
+    page.wait_for_timeout(1000)
+
+    # Dismiss jQuery UI dialog if it appears (e-petition info dialog)
+    _dismiss_ui_dialog(page)
+
+    # Visitor name (방문자 성명) - usually pre-filled and readonly when logged in
+    name_input = page.query_selector('input#resvNm1')
+    if name_input and name_input.is_editable():
         name_input.fill(visitor_name)
 
-    # Select Task: Visa Extension
-    task_radio = page.query_selector('input[type="radio"][value*="visa extension"], label:has-text("visa extension")')
-    if task_radio:
-        task_radio.click()
-    else:
-        page.click('text=visa extension', timeout=3000)
-    page.wait_for_timeout(500)
-
-    # Phone number — split into parts (010, middle 4, last 4)
+    # Mobile number (이동전화번호)
     phone_prefix = phone_number[:3]
     phone_mid = phone_number[3:7]
     phone_last = phone_number[7:]
 
-    phone_inputs = page.query_selector_all('select[name*="phone"], input[name*="phone"]')
-    if len(phone_inputs) >= 3:
-        phone_inputs[0].select_option(phone_prefix)
-        phone_inputs[1].fill(phone_mid)
-        phone_inputs[2].fill(phone_last)
+    page.select_option('select#mobileTelNo1', phone_prefix)
+    page.fill('input#mobileTelNo2', phone_mid)
+    page.fill('input#mobileTelNo3', phone_last)
 
 
-def get_available_dates(page: Page) -> list[date]:
-    """Click the date selection button and parse available dates from the popup.
+def get_available_dates_for_month(page: Page, target_year: int, target_month: int) -> list[date]:
+    """Open date picker, navigate to target month, and parse available dates.
 
     Returns:
         List of available dates as date objects.
     """
-    # Click the date selection button (날짜 선택)
-    page.click('button:has-text("날짜 선택"), input[value="날짜 선택"], a:has-text("날짜 선택")')
+    # Click calendar icon to open popup
+    page.click('#resvYmdSelect')
+    page.wait_for_timeout(2000)
 
-    # Wait for popup window
-    with page.expect_popup() as popup_info:
-        pass
-    popup = popup_info.value
+    # Get the popup page (new window)
+    pages = page.context.pages
+    if len(pages) < 2:
+        return []
+    popup = pages[-1]
     popup.wait_for_load_state("networkidle")
+    popup.wait_for_timeout(1000)
 
-    # Click "다음 달" (next month) to go to the target month
-    next_month_btn = popup.query_selector('a:has-text("다음 달"), button:has-text("다음 달")')
-    if next_month_btn:
-        next_month_btn.click()
-        popup.wait_for_timeout(1000)
+    # Navigate to target month
+    _navigate_calendar_to_month(popup, target_year, target_month)
 
-    # Parse available dates from the calendar
-    available_dates = []
-
-    # Look for clickable date cells
-    date_links = popup.query_selector_all('a[href*="selDate"], td.able a, td:not(.disabled) a')
-
-    for link in date_links:
-        text = link.inner_text().strip()
-        if text.isdigit():
-            day = int(text)
-            header = popup.query_selector('.month, .cal_title, th[colspan]')
-            if header:
-                header_text = header.inner_text()
-                year_match = re.search(r'(\d{4})', header_text)
-                month_match = re.search(r'(\d{1,2})월', header_text)
-                if not month_match:
-                    month_names = {
-                        'January': 1, 'February': 2, 'March': 3, 'April': 4,
-                        'May': 5, 'June': 6, 'July': 7, 'August': 8,
-                        'September': 9, 'October': 10, 'November': 11, 'December': 12
-                    }
-                    for name, num in month_names.items():
-                        if name in header_text:
-                            month = num
-                            break
-                else:
-                    month = int(month_match.group(1))
-
-                if year_match:
-                    year = int(year_match.group(1))
-                    available_dates.append(date(year, month, day))
+    # Parse available dates
+    available_dates = _parse_calendar_dates(popup)
 
     popup.close()
     return available_dates
 
 
-def navigate_calendar_to_month(popup: Page, target_year: int, target_month: int):
-    """Click next/prev month buttons until we reach the target month."""
-    for _ in range(12):
-        header = popup.query_selector('.month, .cal_title, th[colspan]')
-        if not header:
-            break
-        header_text = header.inner_text()
+def _dismiss_ui_dialog(page: Page):
+    """Click 확인 button on jQuery UI dialog if present."""
+    dialog = page.query_selector('.ui-dialog')
+    if dialog and dialog.is_visible():
+        confirm_btn = dialog.query_selector('button:has-text("확인"), a:has-text("확인")')
+        if confirm_btn:
+            confirm_btn.click()
+            page.wait_for_timeout(500)
+        else:
+            close_btn = dialog.query_selector('.ui-dialog-titlebar-close')
+            if close_btn:
+                close_btn.click()
+                page.wait_for_timeout(500)
 
-        year_match = re.search(r'(\d{4})', header_text)
-        month_match = re.search(r'(\d{1,2})월', header_text)
+
+def _parse_calendar_dates(popup: Page) -> list[date]:
+    """Parse available (clickable) dates from the jQuery UI datepicker popup.
+
+    Available dates have <a> links inside <td>.
+    Full/disabled dates have <span> inside <td> with class 'date-resvfull' or 'ui-state-disabled'.
+    """
+    year, month = _read_calendar_header(popup)
+    if not year or not month:
+        return []
+
+    available_dates = []
+
+    # Available dates are td cells containing an <a> link (not disabled)
+    date_cells = popup.query_selector_all('.ui-datepicker-calendar td')
+    for td in date_cells:
+        cls = td.get_attribute('class') or ''
+        # Skip disabled, other-month, and weekend cells without links
+        if 'ui-datepicker-other-month' in cls:
+            continue
+
+        link = td.query_selector('a')
+        if link:
+            text = link.inner_text().strip()
+            if text.isdigit():
+                day = int(text)
+                available_dates.append(date(year, month, day))
+
+    return available_dates
+
+
+def _read_calendar_header(popup: Page) -> tuple[int | None, int | None]:
+    """Read year and month from jQuery UI datepicker header."""
+    year_el = popup.query_selector('.ui-datepicker-year')
+    month_el = popup.query_selector('.ui-datepicker-month')
+
+    if year_el and month_el:
+        year_text = year_el.inner_text().strip()
+        month_text = month_el.inner_text().strip()
+
+        year_match = re.search(r'(\d{4})', year_text)
+        month_match = re.search(r'(\d{1,2})', month_text)
 
         if year_match and month_match:
-            current_year = int(year_match.group(1))
-            current_month = int(month_match.group(1))
+            return int(year_match.group(1)), int(month_match.group(1))
 
-            if current_year == target_year and current_month == target_month:
-                return
+    return None, None
 
-            if (current_year, current_month) < (target_year, target_month):
-                popup.click('a:has-text("다음 달"), button:has-text("다음")')
-            else:
-                popup.click('a:has-text("이전 달"), button:has-text("이전")')
-            popup.wait_for_timeout(1000)
+
+def _navigate_calendar_to_month(popup: Page, target_year: int, target_month: int):
+    """Click next/prev month buttons until we reach the target month."""
+    for _ in range(12):
+        year, month = _read_calendar_header(popup)
+        if not year or not month:
+            break
+
+        if year == target_year and month == target_month:
+            return
+
+        if (year, month) < (target_year, target_month):
+            next_btn = popup.query_selector('a.ui-datepicker-next')
+            if next_btn:
+                next_btn.click()
+                popup.wait_for_timeout(1500)
+        else:
+            prev_btn = popup.query_selector('a.ui-datepicker-prev')
+            if prev_btn:
+                prev_btn.click()
+                popup.wait_for_timeout(1500)

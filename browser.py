@@ -34,14 +34,14 @@ def login(page: Page, user_id: str, password: str):
     page.goto(LOGIN_URL, wait_until="networkidle")
 
     # Fill login form
-    page.fill('input[name="userId"], input[id="userId"]', user_id)
-    page.fill('input[name="userPasswd"], input[type="password"]', password)
+    page.fill('input[name="userId"]', user_id)
+    page.fill('input[name="userPasswd"]', password)
 
-    # Click login button
-    page.click('input[type="submit"], button:has-text("Log in"), a:has-text("Log in")')
+    # Click login button (a.btn_login calls fncLogin() which encodes and submits)
+    with page.expect_navigation(wait_until="networkidle"):
+        page.click('a.btn_login')
 
-    # Wait for navigation after login
-    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(2000)
 
     # Check if login succeeded by looking for logout link
     return is_logged_in(page)
