@@ -1,5 +1,9 @@
+import argparse
+import json
 import os
 import time
+import urllib.request
+import urllib.error
 from datetime import datetime, date
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
@@ -25,7 +29,36 @@ def load_config() -> dict:
         "interval_minutes": int(os.environ.get("CHECK_INTERVAL_MINUTES", "5")),
         "target_before": os.environ.get("TARGET_BEFORE_DATE", "2026-04-15"),
         "headless": os.environ.get("HEADLESS", "false").lower() == "true",
+        "max_check_attempts": int(os.environ.get("MAX_CHECK_ATTEMPTS", "0")),
+        "webhook_url": os.environ.get("WEBHOOK_URL", "").strip(),
+        "webhook_phone": os.environ.get("WEBHOOK_PHONE", "").strip(),
     }
+
+
+def notify_webhook(config: dict, matches: list[date]):
+    """Send webhook notification if WEBHOOK_URL and WEBHOOK_PHONE are configured."""
+    url = config["webhook_url"]
+    phone = config["webhook_phone"]
+
+    if not url or not phone:
+        return
+
+    dates_str = ", ".join(d.isoformat() for d in matches)
+    payload = json.dumps({
+        "phone_number": phone,
+        "message": (
+            f"URGENT: HiKorea slot tersedia! Tanggal: {dates_str} "
+            f"(sebelum target {config['target_before']}). "
+            f"Segera booking di https://www.hikorea.go.kr/resv/ResvIdntR.pt"
+        ),
+    }).encode()
+
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            log(f"Webhook sent ({resp.status})")
+    except (urllib.error.URLError, OSError) as e:
+        log(f"Webhook failed: {e}")
 
 
 def setup_form(page, config: dict):
@@ -72,6 +105,7 @@ def check_slots(page, config: dict) -> list[date]:
     matches = [d for d in all_dates if d < target]
     if matches:
         log(f">>> MATCH FOUND: {', '.join(d.isoformat() for d in matches)} before target {config['target_before']}")
+        notify_webhook(config, matches)
 
     return all_dates
 
@@ -93,12 +127,26 @@ def ensure_logged_in(page, config: dict, context) -> bool:
     return success
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="HiKorea Slot Monitor")
+    parser.add_argument("-max", type=int, default=None, help="Maximum number of check attempts (overrides MAX_CHECK_ATTEMPTS in .env)")
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
     config = load_config()
+
+    # CLI arg overrides .env
+    if args.max is not None:
+        config["max_check_attempts"] = args.max
+
+    max_attempts = config["max_check_attempts"]
 
     log("HiKorea Slot Monitor starting...")
     log(f"Target: find slots before {config['target_before']}")
     log(f"Check interval: {config['interval_minutes']} minutes")
+    log(f"Max check attempts: {'unlimited' if max_attempts <= 0 else max_attempts}")
     log(f"Headless: {config['headless']}")
 
     with sync_playwright() as p:
@@ -127,13 +175,20 @@ def main():
 
         # Monitoring loop
         try:
+            attempt = 0
             while True:
                 if not ensure_logged_in(page, config, context):
                     log(f"Waiting {config['interval_minutes']} minutes before retry...")
                     time.sleep(config["interval_minutes"] * 60)
                     continue
 
+                attempt += 1
+                log(f"Check attempt {attempt}{f'/{max_attempts}' if max_attempts > 0 else ''}...")
                 check_slots(page, config)
+
+                if max_attempts > 0 and attempt >= max_attempts:
+                    log(f"Reached maximum check attempts ({max_attempts}). Stopping.")
+                    break
 
                 log(f"Next check in {config['interval_minutes']} minutes...")
                 time.sleep(config["interval_minutes"] * 60)
