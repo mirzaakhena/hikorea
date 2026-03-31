@@ -51,8 +51,12 @@ def fill_reservation_form(page: Page, orgn_cd: str, desk_seq: str, task_code: st
     page.fill('input#mobileTelNo3', phone_last)
 
 
-def get_available_dates_for_month(page: Page, target_year: int, target_month: int) -> list[date]:
-    """Open date picker, navigate to target month, and parse available dates.
+def get_available_dates_for_months(page: Page, months: list[tuple[int, int]]) -> list[date]:
+    """Open date picker once, check multiple months, and return all available dates.
+
+    Args:
+        page: Playwright page (form should be filled)
+        months: List of (year, month) tuples to check, e.g. [(2026, 4), (2026, 5)]
 
     Returns:
         List of available dates as date objects.
@@ -69,14 +73,13 @@ def get_available_dates_for_month(page: Page, target_year: int, target_month: in
     popup.wait_for_load_state("networkidle")
     popup.wait_for_timeout(1000)
 
-    # Navigate to target month
-    _navigate_calendar_to_month(popup, target_year, target_month)
-
-    # Parse available dates
-    available_dates = _parse_calendar_dates(popup)
+    all_dates = []
+    for year, month in sorted(months):
+        _navigate_calendar_to_month(popup, year, month)
+        all_dates.extend(_parse_calendar_dates(popup))
 
     popup.close()
-    return available_dates
+    return all_dates
 
 
 def _dismiss_ui_dialog(page: Page):

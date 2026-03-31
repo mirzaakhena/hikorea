@@ -4,7 +4,7 @@ from datetime import datetime, date
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 from browser import launch_browser, create_context, login, save_session, is_logged_in
-from monitor import fill_reservation_form, get_available_dates_for_month
+from monitor import fill_reservation_form, get_available_dates_for_months
 
 
 def log(msg: str):
@@ -49,20 +49,19 @@ def check_slots(page, config: dict) -> list[date]:
     # Check the target month and the month before it
     months_to_check = set()
     months_to_check.add((target.year, target.month))
-    # Also check previous month if target is early in the month
     if target.month == 1:
         months_to_check.add((target.year - 1, 12))
     else:
         months_to_check.add((target.year, target.month - 1))
 
-    all_dates = []
-    for year, month in sorted(months_to_check):
-        log(f"Checking {year}-{month:02d}...")
-        try:
-            dates = get_available_dates_for_month(page, year, month)
-            all_dates.extend(dates)
-        except Exception as e:
-            log(f"Error reading dates for {year}-{month:02d}: {e}")
+    months_sorted = sorted(months_to_check)
+    log(f"Checking months: {', '.join(f'{y}-{m:02d}' for y, m in months_sorted)}")
+
+    try:
+        all_dates = get_available_dates_for_months(page, months_sorted)
+    except Exception as e:
+        log(f"Error reading dates: {e}")
+        all_dates = []
 
     if not all_dates:
         log("No slots available.")
