@@ -3,7 +3,7 @@ import time
 from datetime import datetime, date
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
-from browser import launch_browser, create_context, login, save_session, is_logged_in
+from browser import launch_browser, create_context, login, logout, save_session, is_logged_in
 from monitor import fill_reservation_form, get_available_dates_for_months
 
 
@@ -126,16 +126,24 @@ def main():
         log("Form filled. Starting monitoring loop...")
 
         # Monitoring loop
-        while True:
-            if not ensure_logged_in(page, config, context):
-                log(f"Waiting {config['interval_minutes']} minutes before retry...")
+        try:
+            while True:
+                if not ensure_logged_in(page, config, context):
+                    log(f"Waiting {config['interval_minutes']} minutes before retry...")
+                    time.sleep(config["interval_minutes"] * 60)
+                    continue
+
+                check_slots(page, config)
+
+                log(f"Next check in {config['interval_minutes']} minutes...")
                 time.sleep(config["interval_minutes"] * 60)
-                continue
-
-            check_slots(page, config)
-
-            log(f"Next check in {config['interval_minutes']} minutes...")
-            time.sleep(config["interval_minutes"] * 60)
+        except KeyboardInterrupt:
+            log("Shutting down...")
+        finally:
+            log("Logging out and closing browser...")
+            logout(page)
+            browser.close()
+            log("Done. Bye!")
 
 
 if __name__ == "__main__":
