@@ -141,8 +141,14 @@ def main():
             log("Shutting down...")
         finally:
             log("Logging out and closing browser...")
-            logout(page)
-            browser.close()
+            try:
+                logout(page)
+            except Exception:
+                pass
+            try:
+                browser.close()
+            except Exception:
+                pass
             log("Done. Bye!")
 
 
