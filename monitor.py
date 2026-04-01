@@ -60,25 +60,40 @@ def get_available_dates_for_months(page: Page, months: list[tuple[int, int]]) ->
 
     Returns:
         List of available dates as date objects.
+
+    Raises:
+        TimeoutError: If calendar navigation gets stuck (possible session expiry).
     """
     # Click calendar icon to open popup
-    page.click('#resvYmdSelect')
+    try:
+        page.click('#resvYmdSelect', timeout=10000)
+    except Exception as e:
+        raise TimeoutError(f"Failed to open date picker: {e}")
+
     page.wait_for_timeout(2000)
 
     # Get the popup page (new window)
     pages = page.context.pages
     if len(pages) < 2:
-        return []
+        raise TimeoutError("Date picker popup did not open — possible session expiry")
     popup = pages[-1]
-    popup.wait_for_load_state("networkidle")
+
+    try:
+        popup.wait_for_load_state("networkidle", timeout=15000)
+    except Exception as e:
+        popup.close()
+        raise TimeoutError(f"Popup failed to load: {e}")
+
     popup.wait_for_timeout(1000)
 
     all_dates = []
-    for year, month in sorted(months):
-        _navigate_calendar_to_month(popup, year, month)
-        all_dates.extend(_parse_calendar_dates(popup))
+    try:
+        for year, month in sorted(months):
+            _navigate_calendar_to_month(popup, year, month)
+            all_dates.extend(_parse_calendar_dates(popup))
+    finally:
+        popup.close()
 
-    popup.close()
     return all_dates
 
 
@@ -146,22 +161,37 @@ def _read_calendar_header(popup: Page) -> tuple[int | None, int | None]:
 
 
 def _navigate_calendar_to_month(popup: Page, target_year: int, target_month: int):
-    """Click next/prev month buttons until we reach the target month."""
+    """Click next/prev month buttons until we reach the target month.
+
+    Raises TimeoutError if navigation gets stuck (possible session expiry).
+    """
+    max_retries_per_click = 3
     for _ in range(12):
         year, month = _read_calendar_header(popup)
         if not year or not month:
-            break
+            raise TimeoutError("Cannot read calendar header — possible session expiry")
 
         if year == target_year and month == target_month:
             return
 
+        prev_year, prev_month = year, month
+
         if (year, month) < (target_year, target_month):
             next_btn = popup.query_selector('a.ui-datepicker-next')
-            if next_btn:
-                next_btn.click()
-                popup.wait_for_timeout(1500)
+            if not next_btn:
+                raise TimeoutError("Next button not found — possible session expiry")
+            next_btn.click(timeout=5000)
+            popup.wait_for_timeout(1500)
         else:
             prev_btn = popup.query_selector('a.ui-datepicker-prev')
-            if prev_btn:
-                prev_btn.click()
-                popup.wait_for_timeout(1500)
+            if not prev_btn:
+                raise TimeoutError("Prev button not found — possible session expiry")
+            prev_btn.click(timeout=5000)
+            popup.wait_for_timeout(1500)
+
+        # Verify calendar actually moved
+        new_year, new_month = _read_calendar_header(popup)
+        if (new_year, new_month) == (prev_year, prev_month):
+            raise TimeoutError(
+                f"Calendar stuck at {prev_year}-{prev_month:02d} — possible session expiry"
+            )

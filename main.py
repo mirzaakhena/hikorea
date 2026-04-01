@@ -74,7 +74,11 @@ def setup_form(page, config: dict):
 
 
 def check_slots(page, config: dict) -> list[date]:
-    """Run a single slot check. Returns list of available dates."""
+    """Run a single slot check. Returns list of available dates.
+
+    Raises:
+        TimeoutError: If session appears expired (calendar stuck/unresponsive).
+    """
     log("Starting slot check...")
 
     target = date.fromisoformat(config["target_before"])
@@ -92,6 +96,8 @@ def check_slots(page, config: dict) -> list[date]:
 
     try:
         all_dates = get_available_dates_for_months(page, months_sorted)
+    except TimeoutError:
+        raise  # Re-raise TimeoutError for session expiry handling
     except Exception as e:
         log(f"Error reading dates: {e}")
         all_dates = []
@@ -184,7 +190,22 @@ def main():
 
                 attempt += 1
                 log(f"Check attempt {attempt}{f'/{max_attempts}' if max_attempts > 0 else ''}...")
-                check_slots(page, config)
+
+                try:
+                    check_slots(page, config)
+                except TimeoutError as e:
+                    log(f"Session likely expired: {e}")
+                    log("Forcing re-login...")
+                    try:
+                        success = login(page, config["user_id"], config["password"])
+                        if success:
+                            save_session(context)
+                            log("Re-login successful.")
+                            setup_form(page, config)
+                        else:
+                            log("Re-login FAILED. Will retry next cycle.")
+                    except Exception as login_err:
+                        log(f"Re-login error: {login_err}")
 
                 if max_attempts > 0 and attempt >= max_attempts:
                     log(f"Reached maximum check attempts ({max_attempts}). Stopping.")
