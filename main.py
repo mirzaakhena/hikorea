@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import random
 import time
 import urllib.request
 import urllib.error
@@ -14,6 +15,24 @@ from monitor import fill_reservation_form, get_available_dates_for_months
 def log(msg: str):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {msg}", flush=True)
+
+
+# Random jitter range (hardcoded): ±5 to 15 minutes around the base interval
+JITTER_MIN_MINUTES = 5
+JITTER_MAX_MINUTES = 15
+
+
+def get_sleep_seconds(base_minutes: int) -> tuple[float, float]:
+    """Calculate sleep duration with random jitter.
+
+    Returns (sleep_seconds, actual_minutes) where actual_minutes is for logging.
+    Jitter adds/subtracts a random value between JITTER_MIN and JITTER_MAX minutes.
+    Result is clamped to a minimum of 1 minute to avoid zero/negative delays.
+    """
+    jitter = random.uniform(JITTER_MIN_MINUTES, JITTER_MAX_MINUTES)
+    sign = random.choice([-1, 1])
+    actual_minutes = max(1.0, base_minutes + sign * jitter)
+    return actual_minutes * 60, round(actual_minutes, 1)
 
 
 def load_config() -> dict:
@@ -151,7 +170,7 @@ def main():
 
     log("HiKorea Slot Monitor starting...")
     log(f"Target: find slots before {config['target_before']}")
-    log(f"Check interval: {config['interval_minutes']} minutes")
+    log(f"Check interval: {config['interval_minutes']} minutes (±{JITTER_MIN_MINUTES}-{JITTER_MAX_MINUTES}min jitter)")
     log(f"Max check attempts: {'unlimited' if max_attempts <= 0 else max_attempts}")
     log(f"Headless: {config['headless']}")
 
@@ -184,8 +203,9 @@ def main():
             attempt = 0
             while True:
                 if not ensure_logged_in(page, config, context):
-                    log(f"Waiting {config['interval_minutes']} minutes before retry...")
-                    time.sleep(config["interval_minutes"] * 60)
+                    sleep_secs, actual_min = get_sleep_seconds(config["interval_minutes"])
+                    log(f"Waiting {actual_min} minutes before retry (base: {config['interval_minutes']}min + jitter)...")
+                    time.sleep(sleep_secs)
                     continue
 
                 attempt += 1
@@ -211,8 +231,9 @@ def main():
                     log(f"Reached maximum check attempts ({max_attempts}). Stopping.")
                     break
 
-                log(f"Next check in {config['interval_minutes']} minutes...")
-                time.sleep(config["interval_minutes"] * 60)
+                sleep_secs, actual_min = get_sleep_seconds(config["interval_minutes"])
+                log(f"Next check in {actual_min} minutes (base: {config['interval_minutes']}min + jitter)...")
+                time.sleep(sleep_secs)
         except KeyboardInterrupt:
             log("Shutting down...")
         finally:
