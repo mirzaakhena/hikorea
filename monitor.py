@@ -180,13 +180,13 @@ def _navigate_calendar_to_month(popup: Page, target_year: int, target_month: int
             next_btn = popup.query_selector('a.ui-datepicker-next')
             if not next_btn:
                 raise TimeoutError("Next button not found — possible session expiry")
-            next_btn.click(timeout=5000)
+            next_btn.click(timeout=5000, force=True)
             popup.wait_for_timeout(1500)
         else:
             prev_btn = popup.query_selector('a.ui-datepicker-prev')
             if not prev_btn:
                 raise TimeoutError("Prev button not found — possible session expiry")
-            prev_btn.click(timeout=5000)
+            prev_btn.click(timeout=5000, force=True)
             popup.wait_for_timeout(1500)
 
         # Verify calendar actually moved

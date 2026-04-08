@@ -101,8 +101,11 @@ def check_slots(page, config: dict) -> list[date]:
     log("Starting slot check...")
 
     target = date.fromisoformat(config["target_before"])
+    today = date.today()
+    current_ym = (today.year, today.month)
 
-    # Check the target month and the month before it
+    # Check the target month and the month before it, but skip months already in the past
+    # (the calendar cannot navigate to months before the current month).
     months_to_check = set()
     months_to_check.add((target.year, target.month))
     if target.month == 1:
@@ -110,7 +113,10 @@ def check_slots(page, config: dict) -> list[date]:
     else:
         months_to_check.add((target.year, target.month - 1))
 
-    months_sorted = sorted(months_to_check)
+    months_sorted = sorted(ym for ym in months_to_check if ym >= current_ym)
+    if not months_sorted:
+        log("No future months to check (target already passed).")
+        return []
     log(f"Checking months: {', '.join(f'{y}-{m:02d}' for y, m in months_sorted)}")
 
     try:
